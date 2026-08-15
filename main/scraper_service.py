@@ -2,7 +2,6 @@ import sys
 import os
 import argparse
 import time
-import pandas as pd
 from playwright.sync_api import sync_playwright
 
 def main():
@@ -165,14 +164,32 @@ def main():
     if results:
         try:
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            df = pd.DataFrame(results)
+            columns = list(results[0].keys()) if results else []
             fmt = args.format.lower()
             
             if fmt == "xlsx":
-                df.to_excel(output_path, index=False)
+                import openpyxl
+                wb = openpyxl.Workbook()
+                ws = wb.active
+                ws.append(columns)
+                for row_dict in results:
+                    ws.append([str(row_dict.get(c, "")) for c in columns])
+                wb.save(output_path)
                 
             elif fmt == "html":
-                html = df.to_html(index=False, render_links=True, classes="table table-striped")
+                html = '<table class="table table-striped">\n<thead><tr>'
+                for col in columns:
+                    html += f'<th>{col}</th>'
+                html += '</tr></thead>\n<tbody>\n'
+                for row_dict in results:
+                    html += '<tr>'
+                    for col in columns:
+                        val = str(row_dict.get(col, ""))
+                        if str(val).startswith('http'):
+                            val = f'<a href="{val}">{val}</a>'
+                        html += f'<td>{val}</td>'
+                    html += '</tr>\n'
+                html += '</tbody>\n</table>'
                 styled_html = f"<html><head><style>table {{font-family: Arial, sans-serif; border-collapse: collapse; width: 100%;}} td, th {{border: 1px solid #ddd; padding: 8px;}} tr:nth-child(even){{background-color: #f2f2f2;}} th {{padding-top: 12px; padding-bottom: 12px; text-align: left; background-color: #04AA6D; color: white;}}</style></head><body><h2>Google Maps Scraper Results</h2>{html}</body></html>"
                 with open(output_path, "w", encoding="utf-8") as f:
                     f.write(styled_html)
@@ -184,18 +201,19 @@ def main():
                     doc.add_heading('Google Maps Scraper Results', 0)
                     
                     # Create table
-                    table = doc.add_table(rows=1, cols=len(df.columns))
+                    table = doc.add_table(rows=1, cols=len(columns))
                     table.style = 'Table Grid'
                     
                     # Add headers
                     hdr_cells = table.rows[0].cells
-                    for i, col_name in enumerate(df.columns):
+                    for i, col_name in enumerate(columns):
                         hdr_cells[i].text = str(col_name)
                         
                     # Add rows
-                    for index, row in df.iterrows():
+                    for index, row_dict in enumerate(results):
                         row_cells = table.add_row().cells
-                        for i, val in enumerate(row):
+                        for i, col in enumerate(columns):
+                            val = row_dict.get(col, "")
                             row_cells[i].text = str(val) if val else ""
                             
                     doc.save(output_path)
@@ -216,7 +234,7 @@ def main():
                     pdf.set_font("helvetica", size=8)
                     
                     # For PDF, table rendering can be complex, so we will list items
-                    for index, row in df.iterrows():
+                    for index, row in enumerate(results):
                         pdf.set_font("helvetica", "B", 10)
                         
                         name = str(row['Name']).encode('latin-1', 'replace').decode('latin-1')
