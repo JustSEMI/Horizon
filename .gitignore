@@ -1,0 +1,7 @@
+log/
+output/
+main/notified_games.json
+__pycache__/
+*.pyc
+settings.json
+.agents/

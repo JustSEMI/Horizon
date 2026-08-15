@@ -1,0 +1,11 @@
+customtkinter
+pystray
+Pillow
+iconipy
+pypresence
+psutil
+pywin32
+requests
+playwright
+pandas
+openpyxl
