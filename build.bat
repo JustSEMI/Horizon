@@ -9,7 +9,7 @@ rmdir /s /q dist
 
 echo.
 echo Memulai proses kompilasi (Single Executable)...
-pyinstaller --noconfirm ^
+pyinstaller --clean --noconfirm ^
     --onefile ^
     --windowed ^
     --icon "assets/icon.ico" ^
@@ -19,13 +19,14 @@ pyinstaller --noconfirm ^
     --hidden-import "main.discord_services" ^
     --hidden-import "main.scraper_service" ^
     --hidden-import "main.System.monitor" ^
+    --hidden-import "fpdf" ^
+    --hidden-import "docx" ^
     --exclude-module "pandas" ^
     --exclude-module "numpy" ^
     --exclude-module "matplotlib" ^
     --exclude-module "scipy" ^
     --exclude-module "IPython" ^
     --exclude-module "pytest" ^
-    --exclude-module "unittest" ^
     --exclude-module "pydoc" ^
     --exclude-module "notebook" ^
     --exclude-module "pytz" ^
@@ -35,4 +36,6 @@ pyinstaller --noconfirm ^
 
 echo.
 echo Selesai! File Horizon.exe dapat ditemukan di folder 'dist'
+echo Membersihkan file spesifikasi...
+if exist "Horizon.spec" del /q "Horizon.spec"
 pause

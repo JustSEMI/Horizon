@@ -91,7 +91,11 @@ class FreebieFetcher:
     # Mengambil data game gratis dari GamerPower API.
     
     API_URL = "https://www.gamerpower.com/api/giveaways?type=game&platform=pc"
-    TARGET_PLATFORMS = ["Epic Games Store", "Steam", "GOG", "Ubisoft"]
+    DEFAULT_PLATFORMS = ["Epic Games Store", "Steam", "GOG", "Ubisoft"]
+    
+    def __init__(self, platforms: list[str] | None = None):
+        # Daftar platform yang mau dipantau, bisa dikonfigurasi lewat settings.json
+        self.target_platforms = platforms if platforms else self.DEFAULT_PLATFORMS
     
     def fetch_free_games(self) -> list[dict[str, Any]]:
         try:
@@ -108,7 +112,7 @@ class FreebieFetcher:
                 platform = game.get("platforms", "")
                 
                 # Filter platform eksplisit
-                if not any(target.lower() in platform.lower() for target in self.TARGET_PLATFORMS):
+                if not any(target.lower() in platform.lower() for target in self.target_platforms):
                     continue
                     
                 # Pastikan giveaway masih aktif
@@ -142,6 +146,7 @@ class DiscordNotifier:
         "steam": {"hex": 0x1b2838, "footer": "Steam Store • Freebie Alert"},
         "gog": {"hex": 0x8a2be2, "footer": "GOG.com • Freebie Alert"},
         "ubisoft": {"hex": 0x0070d1, "footer": "Ubisoft Connect • Freebie Alert"},
+        "itch": {"hex": 0xfa5c5c, "footer": "itch.io • Freebie Alert"},
         "default": {"hex": 0x5865F2, "footer": "PC Game • Freebie Alert"}
     }
     
@@ -241,6 +246,7 @@ class Daemon:
                 freebie_config = data.get("freebie", {})
                 webhook_url = freebie_config.get("discord_webhook", "")
                 check_interval_mins = int(freebie_config.get("check_interval_mins", "360"))
+                raw_platforms = freebie_config.get("target_platforms", "")
         except Exception as e:
             logger.error(f"Gagal memuat settings.json: {e}")
             sys.exit(1)
@@ -248,9 +254,16 @@ class Daemon:
         self.check_interval = check_interval_mins * 60
         logger.setLevel(logging.INFO)
         
-        self.fetcher = FreebieFetcher()
+        # Parse daftar platform dari string dipisah koma di settings.json
+        target_platforms = None
+        if isinstance(raw_platforms, str) and raw_platforms.strip():
+            target_platforms = [p.strip() for p in raw_platforms.split(",") if p.strip()]
+        elif isinstance(raw_platforms, list) and raw_platforms:
+            target_platforms = raw_platforms
+        
+        self.fetcher = FreebieFetcher(target_platforms)
         self.notifier = DiscordNotifier(webhook_url)
-        self.storage = StorageManager(os.path.join(os.path.dirname(__file__), "notified_games.json"))
+        self.storage = StorageManager(os.path.join(HORIZON_DIR, "notified_games.json"))
         
         self.is_running = True
         signal.signal(signal.SIGINT, self._handle_shutdown)

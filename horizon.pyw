@@ -51,8 +51,10 @@ DEFAULT_CONFIG = {
     },
     "freebie": {
         "discord_webhook": "",
-        "check_interval_mins": "15"
-    }
+        "check_interval_mins": "15",
+        "target_platforms": "Epic Games Store,Steam,GOG,Ubisoft"
+    },
+    "dashboard": {}
 }
 
 class ConfigManager:
@@ -69,6 +71,10 @@ class ConfigManager:
             for key, val in DEFAULT_CONFIG.items():
                 if key not in loaded:
                     loaded[key] = val
+                elif isinstance(val, dict) and isinstance(loaded.get(key), dict):
+                    for sub_key, sub_val in val.items():
+                        if sub_key not in loaded[key]:
+                            loaded[key][sub_key] = sub_val
             
             return loaded
         except Exception:
@@ -193,6 +199,31 @@ class FreebieAlertWorker(BaseWorker):
     def __init__(self):
         script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main", "discord_services.py")
         super().__init__("Free Games Notifier", "freebie", script_path, ["--mode", "webhook"])
+
+class PlatformChecklist(ctk.CTkFrame):
+    AVAILABLE_PLATFORMS = ["Epic Games Store", "Steam", "GOG", "Ubisoft", "itch.io"]
+
+    def __init__(self, master, selected_csv="", accent_color="#3b82f6", get_font=None, **kwargs):
+        super().__init__(master, fg_color="transparent", **kwargs)
+
+        selected = {p.strip().lower() for p in selected_csv.split(",") if p.strip()}
+        self.vars = {}
+
+        self.grid_columnconfigure((0, 1), weight=1)
+        for i, platform in enumerate(self.AVAILABLE_PLATFORMS):
+            var = ctk.StringVar(value=platform if platform.lower() in selected else "")
+            chk = ctk.CTkCheckBox(
+                self, text=platform, variable=var, onvalue=platform, offvalue="",
+                font=get_font(size=12) if get_font else None,
+                fg_color=accent_color, hover_color=accent_color,
+                text_color=("#111827", "#ffffff"), checkbox_width=18, checkbox_height=18
+            )
+            chk.grid(row=i // 2, column=i % 2, padx=5, pady=4, sticky="w")
+            self.vars[platform] = var
+
+    def get(self):
+        # Kembalikan string CSV dari platform yang dicentang sesuai format settings.json
+        return ",".join(p for p, v in self.vars.items() if v.get())
 
 class CollapsibleFeature(ctk.CTkFrame):
     def __init__(self, master, title, **kwargs):
@@ -382,6 +413,7 @@ class DashboardApp(ctk.CTk):
             ("Dashboard", 'layout-dashboard'),
             ("Discord", 'squircle'),
             ("Scraping", 'squircle'),
+            ("History", 'history'),
             ("Logs", 'terminal'),
             ("Settings", 'settings'),
             ("Credits", 'star')
@@ -548,8 +580,22 @@ class DashboardApp(ctk.CTk):
             lbl_set = ctk.CTkLabel(settings_card, text="Parameter Configuration", font=self.get_font(size=12, weight="bold"), text_color=("#4b5563", "#9ca3af"))
             lbl_set.pack(anchor="w", padx=15, pady=(10, 5))
             
+            if not hasattr(self, 'config_validators'):
+                self.config_validators = {}
+            self.config_validators[worker.tag] = {}
+            
             if worker.tag in config:
                 for key, val in config[worker.tag].items():
+                    if key == "target_platforms":
+                        # Render sebagai checklist platform, bukan text entry biasa
+                        checklist_widget = self._create_platform_checklist(settings_card, str(val))
+                        self.config_entries[worker.tag][key] = checklist_widget
+                        
+                        validator = self._get_field_validator(key)
+                        if validator:
+                            self.config_validators[worker.tag][key] = validator
+                        continue
+                    
                     row_setting = ctk.CTkFrame(settings_card, fg_color="transparent")
                     row_setting.pack(fill="x", padx=15, pady=2)
                     
@@ -562,14 +608,35 @@ class DashboardApp(ctk.CTk):
                     entry.insert(0, str(val))
                     
                     self.config_entries[worker.tag][key] = entry
+                    
+                    # Validasi realtime untuk field kritikal
+                    validator = self._get_field_validator(key)
+                    if validator:
+                        self.config_validators[worker.tag][key] = validator
+                        def make_validate_cmd(ent=entry, val_fn=validator):
+                            def on_change(event=None):
+                                is_valid = val_fn(ent.get())
+                                ent.configure(border_color=("#22c55e", "#22c55e") if is_valid else ("#ef4444", "#ef4444"))
+                            return on_change
+                        cmd_validate = make_validate_cmd()
+                        entry.bind("<KeyRelease>", cmd_validate)
+                        cmd_validate() # Jalankan sekali di awal untuk cek nilai default
             
             def make_save_cmd(w_tag=worker.tag):
                 def cmd():
+                    # Cegah simpan kalau ada field yang tidak valid
+                    validators = self.config_validators.get(w_tag, {})
+                    for k, val_fn in validators.items():
+                        ent = self.config_entries[w_tag][k]
+                        if not val_fn(ent.get()):
+                            self.show_toast(f"'{k.replace('_', ' ').title()}' tidak valid. Periksa kembali.", 3500)
+                            return
                     # Ambil nilai dari input UI dan simpan ke config dictionary
                     for k, ent in self.config_entries[w_tag].items():
                         config[w_tag][k] = ent.get()
                     ConfigManager.save(config)
                     logger.info(f"Configuration '{w_tag}' saved to settings.json")
+                    self.show_toast("Configuration saved!", 2000)
                 return cmd
 
             btn_save = ctk.CTkButton(settings_card, text="Save Config", font=self.get_font(size=12, weight="bold"), fg_color=self.accent_color, hover_color=self.accent_hover_color, height=28, command=make_save_cmd())
@@ -621,6 +688,25 @@ class DashboardApp(ctk.CTk):
         self.opt_format.set("Excel")
         self._accent_widgets.append(self.opt_format)
         
+        # Membuat row untuk Export Fields
+        row_fields = ctk.CTkFrame(self.scrape_card, fg_color="transparent")
+        row_fields.pack(fill="x", padx=15, pady=(5, 0))
+        lbl_fields = ctk.CTkLabel(row_fields, text="Export Fields", font=self.get_font(size=12, weight="bold"), text_color=("#111827", "#ffffff"), width=140, anchor="w")
+        lbl_fields.pack(side="left", anchor="nw")
+        
+        self.field_vars = {}
+        fields_container = ctk.CTkFrame(row_fields, fg_color="transparent")
+        fields_container.pack(side="left", fill="x", expand=True, padx=(5, 0))
+        
+        default_fields = ["Name", "Category", "Rating", "Address", "Phone", "Website", "URL"]
+        fields_container.grid_columnconfigure((0, 1), weight=1)
+        for i, field in enumerate(default_fields):
+            var = ctk.StringVar(value=field)
+            chk = ctk.CTkCheckBox(fields_container, text=field, variable=var, onvalue=field, offvalue="", font=self.get_font(size=11), fg_color=self.accent_color, hover_color=self.accent_hover_color, text_color=("#111827", "#ffffff"), checkbox_width=18, checkbox_height=18)
+            chk.grid(row=i//2, column=i%2, padx=5, pady=5, sticky="w")
+            self._accent_widgets.append(chk)
+            self.field_vars[field] = var
+        
         # Membuat row untuk Deskripsi Format
         row_desc = ctk.CTkFrame(self.scrape_card, fg_color="transparent")
         row_desc.pack(fill="x", padx=15, pady=(0, 5))
@@ -636,17 +722,69 @@ class DashboardApp(ctk.CTk):
         self.scraper_process = None
         self.scraper_thread = None
 
+        # Frame History
+        self.frame_history = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
+        self.frame_history.grid_columnconfigure(0, weight=1)
+        self.frame_history.grid_rowconfigure(2, weight=1)
+        
+        self.history_title = ctk.CTkLabel(self.frame_history, text="Scraping History", font=self.get_font(size=22, weight="bold"), text_color=("#111827", "#ffffff"))
+        self.history_title.grid(row=0, column=0, padx=30, pady=(30, 15), sticky="nw")
+        
+        history_toolbar = ctk.CTkFrame(self.frame_history, fg_color="transparent")
+        history_toolbar.grid(row=1, column=0, padx=30, pady=(0, 10), sticky="ew")
+        
+        img_refresh = ctk.CTkImage(light_image=ic_fac_light.asPil('refresh-cw'), dark_image=ic_fac_dark.asPil('refresh-cw'), size=(14, 14))
+        img_folder = ctk.CTkImage(light_image=ic_fac_light.asPil('folder-open'), dark_image=ic_fac_dark.asPil('folder-open'), size=(14, 14))
+        
+        self.btn_history_refresh = ctk.CTkButton(history_toolbar, image=img_refresh, text=" Refresh", font=self.get_font(size=12, weight="bold"), fg_color=self.accent_color, hover_color=self.accent_hover_color, height=28, width=100, command=self.refresh_history)
+        self.btn_history_refresh.pack(side="left", padx=(0, 8))
+        self._accent_widgets.append(self.btn_history_refresh)
+        
+        self.btn_history_open_folder = ctk.CTkButton(history_toolbar, image=img_folder, text=" Open Folder", font=self.get_font(size=12, weight="bold"), fg_color=("#d1d5db", "#3f3f46"), hover_color=("#9ca3af", "#52525b"), text_color=("#111827", "#ffffff"), height=28, width=120, command=self.open_output_folder)
+        self.btn_history_open_folder.pack(side="left")
+        
+        self.history_scroll = ctk.CTkScrollableFrame(self.frame_history, corner_radius=0, fg_color="transparent")
+        self.history_scroll.grid(row=2, column=0, padx=30, pady=(0, 30), sticky="nsew")
+        self.history_scroll.grid_columnconfigure(0, weight=1)
+        
+        self.history_empty_label = ctk.CTkLabel(self.history_scroll, text="No scraping results yet. Run a scrape from the Scraping tab to see it here.", font=self.get_font(size=12), text_color=("#6b7280", "#9ca3af"))
+        
+        self.history_rows = []
+
         # Frame Logs
         self.frame_logs = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
         self.frame_logs.grid_columnconfigure(0, weight=1)
-        self.frame_logs.grid_rowconfigure(1, weight=1)
+        self.frame_logs.grid_rowconfigure(2, weight=1)
         
         self.logs_title = ctk.CTkLabel(self.frame_logs, text="Debug", font=self.get_font(size=22, weight="bold"), text_color=("#111827", "#ffffff"))
         self.logs_title.grid(row=0, column=0, padx=30, pady=(30, 15), sticky="nw")
         
+        # Toolbar Logs: Filter tag & Export
+        logs_toolbar = ctk.CTkFrame(self.frame_logs, fg_color="transparent")
+        logs_toolbar.grid(row=1, column=0, padx=30, pady=(0, 10), sticky="ew")
+        
+        lbl_filter = ctk.CTkLabel(logs_toolbar, text="Filter:", font=self.get_font(size=12, weight="bold"), text_color=("#111827", "#ffffff"))
+        lbl_filter.pack(side="left", padx=(0, 8))
+        
+        self.opt_log_filter = ctk.CTkOptionMenu(
+            logs_toolbar, values=["All", "App_Sync", "Freebie", "Gmaps", "System"], 
+            font=self.get_font(size=12), fg_color=("#ffffff", "#131315"), button_color=self.accent_color, button_hover_color=self.accent_hover_color,
+            text_color=("#111827", "#ffffff"), dropdown_fg_color=("#ffffff", "#18181b"), dropdown_hover_color=self.accent_color, 
+            dropdown_text_color=("#111827", "#ffffff"), dropdown_font=self.get_font(size=12), height=28, width=130,
+            command=lambda _=None: self.render_logs()
+        )
+        self.opt_log_filter.set("All")
+        self.opt_log_filter.pack(side="left", padx=(0, 15))
+        self._accent_widgets.append(self.opt_log_filter)
+        
+        img_export = ctk.CTkImage(light_image=ic_fac_light.asPil('download'), dark_image=ic_fac_dark.asPil('download'), size=(14, 14))
+        self.btn_log_export = ctk.CTkButton(logs_toolbar, image=img_export, text=" Export Log", font=self.get_font(size=12, weight="bold"), fg_color=self.accent_color, hover_color=self.accent_hover_color, height=28, width=110, command=self.export_logs)
+        self.btn_log_export.pack(side="left")
+        self._accent_widgets.append(self.btn_log_export)
+        
         # Textbox log
         self.console_text = ctk.CTkTextbox(self.frame_logs, state="disabled", font=self.get_font(size=12), fg_color=("#ffffff", "#131315"), text_color=("#1f2937", "#d4d4d8"), border_color=("#d1d5db", "#252529"), border_width=1, corner_radius=8)
-        self.console_text.grid(row=1, column=0, padx=30, pady=(0, 30), sticky="nsew")
+        self.console_text.grid(row=2, column=0, padx=30, pady=(0, 30), sticky="nsew")
 
         # Frame Credits
         self.frame_credits = ctk.CTkScrollableFrame(self, corner_radius=0, fg_color="transparent")
@@ -745,9 +883,7 @@ class DashboardApp(ctk.CTk):
             self.frame_settings, 4, "Run at Startup", "Automatically launch HORIZON when Windows starts.",
             ["Disabled", "Enabled"], config.get("dashboard", {}).get("run_on_startup", "Disabled"), self.change_startup_event
         )
-        
 
-        
         # 6. Accent Color Theme
         self.option_theme = create_setting_card(
             self.frame_settings, 6, "Accent Color Theme", "Change the main highlight color of the UI.",
@@ -759,9 +895,7 @@ class DashboardApp(ctk.CTk):
             self.frame_settings, 7, "Toast Notifications", "Show popup messages at the bottom of the screen.",
             ["Enabled", "Disabled"], config.get("dashboard", {}).get("notifications", "Enabled"), self.change_notifications_event
         )
-        
 
-        
         # Tampilkan default tab
         self.select_tab("Dashboard")
         
@@ -790,11 +924,12 @@ class DashboardApp(ctk.CTk):
             
         self.after(1000, self.update_sys_monitor)
 
-    def show_toast(self, message, duration=3000):
+    def show_toast(self, message, duration=3000, error=False):
         if config.get("dashboard", {}).get("notifications", "Enabled") == "Disabled":
             return
-            
-        toast = ctk.CTkFrame(self, fg_color=("#10b981", "#059669"), corner_radius=8)
+        
+        toast_color = ("#ef4444", "#dc2626") if error else ("#10b981", "#059669")
+        toast = ctk.CTkFrame(self, fg_color=toast_color, corner_radius=8)
         lbl = ctk.CTkLabel(toast, text=message, font=self.get_font(size=12, weight="bold"), text_color="#ffffff")
         lbl.pack(padx=20, pady=10)
         
@@ -821,6 +956,11 @@ class DashboardApp(ctk.CTk):
         max_results = self.entry_max.get().strip()
         
         if not query:
+            return
+        
+        selected_fields = [var.get() for var in self.field_vars.values() if var.get()]
+        if not selected_fields:
+            self.show_toast("Please select at least one field to export", 3000, error=True)
             return
             
         full_query = f"{query} di {location}" if location else query
@@ -853,6 +993,8 @@ class DashboardApp(ctk.CTk):
         self.show_toast(f"Scraping started for '{full_query}'...", 3000)
         
         cmd = [sys.executable, "-u", script_path, "--query", full_query, "--max", max_results, "--output", output_path, "--format", export_type]
+        if selected_fields:
+            cmd.extend(["--fields"] + selected_fields)
         
         self.scraper_process = subprocess.Popen(
             cmd,
@@ -862,10 +1004,10 @@ class DashboardApp(ctk.CTk):
             creationflags=subprocess.CREATE_NO_WINDOW
         )
         
-        self.scraper_thread = threading.Thread(target=self._read_scraper_logs, daemon=True)
+        self.scraper_thread = threading.Thread(target=self._read_scraper_logs, args=(full_query, output_path), daemon=True)
         self.scraper_thread.start()
 
-    def _read_scraper_logs(self):
+    def _read_scraper_logs(self, query, output_path):
         if not self.scraper_process:
             return
         
@@ -876,9 +1018,115 @@ class DashboardApp(ctk.CTk):
             if line:
                 logger.info(f"[GMAPS] {line}")
                 
+        exit_code = self.scraper_process.wait()
+        success = exit_code == 0 and os.path.exists(output_path)
+        
         def finish_log():
-            self.show_toast("Scraping finished!", 4000)
+            if success:
+                self.show_toast("Scraping finished!", 4000)
+            else:
+                self.show_toast("Scraping failed. Check Logs for details.", 4000)
+            self.record_history(query, output_path, success)
         self.after(0, finish_log)
+
+    def record_history(self, query, output_path, success):
+        # Simpan riwayat hasil scraping ke file JSON di folder output
+        history_file = os.path.join(HORIZON_DIR, "output", "history.json")
+        entries = []
+        if os.path.exists(history_file):
+            try:
+                with open(history_file, 'r', encoding='utf-8') as f:
+                    entries = json.load(f)
+            except Exception:
+                entries = []
+        
+        entries.insert(0, {
+            "query": query,
+            "path": output_path,
+            "filename": os.path.basename(output_path),
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "success": success
+        })
+        entries = entries[:100] # Batasi maksimal 100 riwayat terakhir
+        
+        try:
+            with open(history_file, 'w', encoding='utf-8') as f:
+                json.dump(entries, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save history: {e}")
+            
+        self.refresh_history()
+
+    def load_history(self):
+        history_file = os.path.join(HORIZON_DIR, "output", "history.json")
+        if not os.path.exists(history_file):
+            return []
+        try:
+            with open(history_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return []
+
+    def refresh_history(self):
+        # Bersihkan baris lama
+        for row in self.history_rows:
+            row.destroy()
+        self.history_rows = []
+        self.history_empty_label.pack_forget()
+        
+        entries = self.load_history()
+        
+        if not entries:
+            self.history_empty_label.pack(padx=15, pady=20)
+            return
+        
+        for entry in entries:
+            row = ctk.CTkFrame(self.history_scroll, fg_color=("#e5e7eb", "#252529"), corner_radius=8)
+            row.pack(fill="x", pady=4)
+            row.grid_columnconfigure(0, weight=1)
+            
+            exists = os.path.exists(entry.get("path", ""))
+            status_color = "#22c55e" if entry.get("success") and exists else "#ef4444"
+            
+            text_frame = ctk.CTkFrame(row, fg_color="transparent")
+            text_frame.grid(row=0, column=0, padx=15, pady=10, sticky="w")
+            
+            lbl_query = ctk.CTkLabel(text_frame, text=entry.get("query", "Unknown"), font=self.get_font(size=13, weight="bold"), text_color=("#111827", "#ffffff"), anchor="w")
+            lbl_query.pack(anchor="w")
+            
+            status_text = "Completed" if (entry.get("success") and exists) else ("File missing" if entry.get("success") else "Failed")
+            info_text = f"{entry.get('timestamp', '')} • {entry.get('filename', '')} • "
+            lbl_info = ctk.CTkLabel(text_frame, text=info_text, font=self.get_font(size=11), text_color=("#4b5563", "#9ca3af"), anchor="w")
+            lbl_info.pack(anchor="w")
+            
+            lbl_status = ctk.CTkLabel(row, text=status_text, font=self.get_font(size=11, weight="bold"), text_color=status_color)
+            lbl_status.grid(row=0, column=1, padx=(0, 10), pady=10, sticky="e")
+            
+            btn_open = ctk.CTkButton(
+                row, text="Open", font=self.get_font(size=11, weight="bold"), width=70, height=26,
+                fg_color=self.accent_color, hover_color=self.accent_hover_color,
+                state="normal" if exists else "disabled",
+                command=lambda p=entry.get("path", ""): self.open_file(p)
+            )
+            btn_open.grid(row=0, column=2, padx=(0, 15), pady=10, sticky="e")
+            self._accent_widgets.append(btn_open)
+            
+            self.history_rows.append(row)
+
+    def open_file(self, path):
+        try:
+            os.startfile(path)
+        except Exception as e:
+            logger.error(f"Failed to open file {path}: {e}")
+            self.show_toast("Could not open file.", 3000)
+
+    def open_output_folder(self):
+        output_dir = os.path.join(HORIZON_DIR, "output")
+        os.makedirs(output_dir, exist_ok=True)
+        try:
+            os.startfile(output_dir)
+        except Exception as e:
+            logger.error(f"Failed to open output folder: {e}")
 
     def update_overview(self):
         active_count = sum(1 for w in self.workers if w.is_running)
@@ -904,6 +1152,7 @@ class DashboardApp(ctk.CTk):
         self.frame_dash.grid_forget()
         self.frame_discord.grid_forget()
         self.frame_scraper.grid_forget()
+        self.frame_history.grid_forget()
         self.frame_logs.grid_forget()
         self.frame_settings.grid_forget()
         self.frame_credits.grid_forget()
@@ -914,6 +1163,9 @@ class DashboardApp(ctk.CTk):
             self.frame_discord.grid(row=0, column=1, sticky="nsew")
         elif tab_name == "Scraping":
             self.frame_scraper.grid(row=0, column=1, sticky="nsew")
+        elif tab_name == "History":
+            self.frame_history.grid(row=0, column=1, sticky="nsew")
+            self.refresh_history()
         elif tab_name == "Logs":
             self.frame_logs.grid(row=0, column=1, sticky="nsew")
         elif tab_name == "Settings":
@@ -929,6 +1181,29 @@ class DashboardApp(ctk.CTk):
         entry.pack(side="left", fill="x", expand=True, padx=(5, 0))
         entry.insert(0, default_value)
         return entry
+
+    def _create_platform_checklist(self, parent, selected_csv):
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", padx=15, pady=(2, 8))
+        lbl = ctk.CTkLabel(row, text="Target Platforms", font=self.get_font(size=12, weight="bold"), text_color=("#111827", "#ffffff"), width=140, anchor="nw")
+        lbl.pack(side="left", anchor="n")
+        checklist = PlatformChecklist(row, selected_csv=selected_csv, accent_color=self.accent_color, get_font=self.get_font)
+        checklist.pack(side="left", fill="x", expand=True, padx=(5, 0))
+        for chk in checklist.winfo_children():
+            self._accent_widgets.append(chk)
+        return checklist
+
+    def _get_field_validator(self, key):
+        # Mengembalikan fungsi validasi ringan untuk field konfigurasi kritikal.
+        if key == "discord_webhook":
+            return lambda v: v.strip() == "" or v.strip().startswith("https://discord.com/api/webhooks/")
+        elif key == "discord_client_id":
+            return lambda v: v.strip() == "" or v.strip().isdigit()
+        elif key == "check_interval_mins":
+            return lambda v: v.strip().isdigit() and int(v.strip()) > 0
+        elif key == "target_platforms":
+            return lambda v: len([p.strip() for p in v.split(",") if p.strip()]) > 0
+        return None
 
     def change_appearance_mode(self, new_appearance_mode: str):
         if "dashboard" not in config:
@@ -988,6 +1263,8 @@ class DashboardApp(ctk.CTk):
                 w.configure(button_color=self.accent_color, button_hover_color=self.accent_hover_color, dropdown_hover_color=self.accent_color)
             elif isinstance(w, ctk.CTkSwitch):
                 w.configure(progress_color=self.accent_color)
+            elif isinstance(w, ctk.CTkCheckBox):
+                w.configure(fg_color=self.accent_color, hover_color=self.accent_color)
 
     def change_notifications_event(self, new_state: str):
         if "dashboard" not in config:
@@ -1034,14 +1311,51 @@ class DashboardApp(ctk.CTk):
 
     def poll_logs(self):
         # Polling logs dari queue tanpa me-lagging UI thread
-        if log_queue:
-            log_str = "\n".join(log_queue)
-            self.console_text.configure(state="normal")
-            self.console_text.delete("1.0", ctk.END)
-            self.console_text.insert(ctk.END, log_str)
-            self.console_text.see(ctk.END) # auto scroll to bottom
-            self.console_text.configure(state="disabled")
+        if log_queue and len(log_queue) != getattr(self, '_last_log_len', -1):
+            self._last_log_len = len(log_queue)
+            self.render_logs()
         self.after(200, self.poll_logs)
+
+    def render_logs(self):
+        # Terapkan filter tag terhadap isi log_queue lalu render ke textbox
+        filter_val = self.opt_log_filter.get() if hasattr(self, 'opt_log_filter') else "All"
+        
+        tag_map = {
+            "App_Sync": "[APP_SYNC]",
+            "Freebie": "[FREEBIE]",
+            "Gmaps": "[GMAPS]",
+        }
+        
+        if filter_val == "All":
+            lines = list(log_queue)
+        elif filter_val == "System":
+            known_tags = tuple(tag_map.values())
+            lines = [l for l in log_queue if not any(t in l for t in known_tags)]
+        else:
+            needle = tag_map.get(filter_val, "")
+            lines = [l for l in log_queue if needle in l]
+        
+        log_str = "\n".join(lines)
+        self.console_text.configure(state="normal")
+        self.console_text.delete("1.0", ctk.END)
+        self.console_text.insert(ctk.END, log_str)
+        self.console_text.see(ctk.END) # auto scroll to bottom
+        self.console_text.configure(state="disabled")
+
+    def export_logs(self):
+        export_dir = os.path.join(HORIZON_DIR, "log")
+        os.makedirs(export_dir, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        export_path = os.path.join(export_dir, f"export_{timestamp}.log")
+        
+        try:
+            with open(export_path, 'w', encoding='utf-8') as f:
+                f.write("\n".join(log_queue))
+            self.show_toast(f"Log exported to log/{os.path.basename(export_path)}", 3500)
+            logger.info(f"Log exported to {export_path}")
+        except Exception as e:
+            logger.error(f"Failed to export log: {e}")
+            self.show_toast("Failed to export log.", 3000)
 
     def create_tray_image(self):
         # Gunakan Lucide icon untuk tray

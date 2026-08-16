@@ -2,7 +2,17 @@ import sys
 import os
 import argparse
 import time
+import functools
 from playwright.sync_api import sync_playwright
+
+print = functools.partial(print, flush=True)
+
+if getattr(sys, 'frozen', False):
+    # PyInstaller playwright hook forces PLAYWRIGHT_BROWSERS_PATH="0" to look in _MEIPASS.
+    # must explicitly set it to the global Windows AppData path to finds the installed browsers.
+    user_profile = os.environ.get("USERPROFILE", "")
+    if user_profile:
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(user_profile, "AppData", "Local", "ms-playwright")
 
 def main():
     parser = argparse.ArgumentParser(description="Google Maps Scraper")
@@ -10,6 +20,7 @@ def main():
     parser.add_argument("--max", type=int, default=20, help="Maximum results to scrape")
     parser.add_argument("--output", type=str, default="output.xlsx", help="Output file path")
     parser.add_argument("--format", type=str, default="xlsx", help="Export format (xlsx, docx, pdf, html)")
+    parser.add_argument("--fields", type=str, nargs="+", default=["Name", "Category", "Rating", "Address", "Phone", "Website", "URL"], help="Fields to extract")
     args = parser.parse_args()
 
     query = args.query
@@ -108,9 +119,7 @@ def main():
                     rating = ""
                     try:
                         rating_text = page.locator('div.F7nice').inner_text()
-                        parts = rating_text.split('\\n')
-                        if len(parts) > 0:
-                            rating = parts[0]
+                        rating = rating_text.replace('\n', ' ').strip()
                     except:
                         pass
                         
@@ -144,7 +153,7 @@ def main():
                         except:
                             pass
                             
-                    results.append({
+                    row_data = {
                         "Name": name,
                         "Category": category,
                         "Rating": rating,
@@ -152,7 +161,9 @@ def main():
                         "Phone": phone,
                         "Website": website,
                         "URL": clean_url
-                    })
+                    }
+                    filtered_data = {k: v for k, v in row_data.items() if k in args.fields}
+                    results.append(filtered_data)
                 except Exception as e:
                     print(f"[WARNING] Failed to extract data for item {i+1}: {str(e)}")
 
@@ -219,6 +230,7 @@ def main():
                     doc.save(output_path)
                 except ImportError:
                     print("[ERROR] python-docx library is required for Word export.")
+                    return
                     
             elif fmt == "pdf":
                 try:
@@ -271,8 +283,9 @@ def main():
                         pdf.ln(3)
                         
                     pdf.output(output_path)
-                except ImportError:
-                    print("[ERROR] fpdf2 library is required for PDF export.")
+                except ImportError as e:
+                    print(f"[ERROR] PDF export failed due to missing library: {e}")
+                    return
             
             print(f"[SUCCESS] Scraped {len(results)} items and saved to {output_path}")
         except Exception as e:
