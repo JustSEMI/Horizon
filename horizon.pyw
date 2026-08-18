@@ -40,6 +40,16 @@ from PIL import Image, ImageDraw
 from iconipy import IconFactory
 from main.System.monitor import SystemMonitor
 
+# Cache IconFactory: satu set icon (lucide) hanya di-load sekali per
+# kombinasi (ukuran, warna). Mencegah puluhan re-load saat build UI.
+_icon_factory_cache = {}
+
+def get_icon_factory(size, color, icon_set='lucide'):
+    key = (icon_set, size, color)
+    if key not in _icon_factory_cache:
+        _icon_factory_cache[key] = IconFactory(icon_set=icon_set, icon_size=size, font_color=color)
+    return _icon_factory_cache[key]
+
 CACHE_DIR = os.path.join(tempfile.gettempdir(), "HORIZON")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
@@ -101,11 +111,15 @@ class CTkLogHandler(logging.Handler):
         super().__init__()
         self.log_queue = log_queue
         self.max_len = max_len
+        # Counter monoton: dipakai UI untuk deteksi log baru tanpa terpengaruh
+        # batas maxlen deque (len() akan mentok di max_len dan berhenti berubah).
+        self.counter = 0
         self.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', '%H:%M:%S'))
 
     def emit(self, record: logging.LogRecord):
         msg = self.format(record)
         self.log_queue.append(msg)
+        self.counter += 1
         if len(self.log_queue) > self.max_len:
             self.log_queue.popleft()
 
@@ -235,8 +249,8 @@ class CollapsibleFeature(ctk.CTkFrame):
         self.current_height = 0
         
         # Lucide Icons untuk chevron
-        ic_fac_light = IconFactory(icon_set='lucide', icon_size=18, font_color='#111827')
-        ic_fac_dark = IconFactory(icon_set='lucide', icon_size=18, font_color='#d4d4d8')
+        ic_fac_light = get_icon_factory(18, '#111827')
+        ic_fac_dark = get_icon_factory(18, '#d4d4d8')
         self.icon_right = ctk.CTkImage(light_image=ic_fac_light.asPil('chevron-right'), dark_image=ic_fac_dark.asPil('chevron-right'), size=(18, 18))
         self.icon_down = ctk.CTkImage(light_image=ic_fac_light.asPil('chevron-down'), dark_image=ic_fac_dark.asPil('chevron-down'), size=(18, 18))
         
@@ -317,13 +331,13 @@ class DashboardApp(ctk.CTk):
             pass
 
         from PIL import ImageTk
-        from iconipy import IconFactory
-        ic_fac = IconFactory(icon_set='lucide', icon_size=64, font_color=self.accent_color)
+        ic_fac = get_icon_factory(64, self.accent_color)
         window_icon_pil = ic_fac.asPil('circle')
         
         icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icon.ico")
         os.makedirs(os.path.dirname(icon_path), exist_ok=True)
-        window_icon_pil.save(icon_path, format="ICO")
+        if not os.path.exists(icon_path):
+            window_icon_pil.save(icon_path, format="ICO")
         self.iconbitmap(icon_path)
 
         # Tangani klik silang (X) sesuai setting
@@ -372,6 +386,9 @@ class DashboardApp(ctk.CTk):
                     self.switches[tag].select()
                 elif not is_running and self.switches[tag].get() == 1:
                     self.switches[tag].deselect()
+            # Refresh menu tray supaya label start/stop & checkmark ikut update
+            if getattr(self, 'tray_icon', None):
+                self.tray_icon.update_menu()
                     
         self.after(0, update)
 
@@ -405,15 +422,14 @@ class DashboardApp(ctk.CTk):
         self.sub_label.pack(anchor="w", pady=(0,0))
         
         # Lucide Icons
-        ic_fac_light = IconFactory(icon_set='lucide', icon_size=18, font_color='#111827')
-        ic_fac_dark = IconFactory(icon_set='lucide', icon_size=18, font_color='#d4d4d8')
+        ic_fac_light = get_icon_factory(18, '#111827')
+        ic_fac_dark = get_icon_factory(18, '#d4d4d8')
         img_hide = ctk.CTkImage(light_image=ic_fac_light.asPil('minimize-2'), dark_image=ic_fac_dark.asPil('minimize-2'), size=(18, 18))
 
         tabs_info = [
             ("Dashboard", 'layout-dashboard'),
             ("Discord", 'squircle'),
             ("Scraping", 'squircle'),
-            ("History", 'history'),
             ("Logs", 'terminal'),
             ("Settings", 'settings'),
             ("Credits", 'star')
@@ -458,8 +474,8 @@ class DashboardApp(ctk.CTk):
         self.lbl_overview_title.grid(row=0, column=0, columnspan=2, padx=15, pady=(15, 5), sticky="w")
         
         # Load custom icons for status and uptime
-        ic_red = IconFactory(icon_set='lucide', icon_size=14, font_color='#ef4444')
-        ic_green = IconFactory(icon_set='lucide', icon_size=14, font_color='#22c55e')
+        ic_red = get_icon_factory(14, '#ef4444')
+        ic_green = get_icon_factory(14, '#22c55e')
         self.img_status_red = ctk.CTkImage(light_image=ic_red.asPil('circle-dot'), dark_image=ic_red.asPil('circle-dot'), size=(14, 14))
         self.img_status_green = ctk.CTkImage(light_image=ic_green.asPil('circle-check'), dark_image=ic_green.asPil('circle-check'), size=(14, 14))
         self.img_timer = ctk.CTkImage(light_image=ic_fac_light.asPil('clock'), dark_image=ic_fac_dark.asPil('clock'), size=(14, 14))
@@ -479,9 +495,9 @@ class DashboardApp(ctk.CTk):
         self.lbl_sysmon_title = ctk.CTkLabel(self.sysmon_card, text="Resource Monitor", font=self.get_font(size=14, weight="bold"), text_color=("#111827", "#ffffff"))
         self.lbl_sysmon_title.grid(row=0, column=0, columnspan=2, padx=15, pady=(15, 10), sticky="w")
         
-        ic_cpu = IconFactory(icon_set='lucide', icon_size=16, font_color='#3b82f6')
-        ic_ram = IconFactory(icon_set='lucide', icon_size=16, font_color='#10b981')
-        ic_net = IconFactory(icon_set='lucide', icon_size=16, font_color='#f59e0b')
+        ic_cpu = get_icon_factory(16, '#3b82f6')
+        ic_ram = get_icon_factory(16, '#10b981')
+        ic_net = get_icon_factory(16, '#f59e0b')
         
         self.img_cpu = ctk.CTkImage(light_image=ic_cpu.asPil('cpu'), dark_image=ic_cpu.asPil('cpu'), size=(16, 16))
         self.img_ram = ctk.CTkImage(light_image=ic_ram.asPil('memory-stick'), dark_image=ic_ram.asPil('memory-stick'), size=(16, 16))
@@ -597,10 +613,10 @@ class DashboardApp(ctk.CTk):
                         continue
                     
                     row_setting = ctk.CTkFrame(settings_card, fg_color="transparent")
-                    row_setting.pack(fill="x", padx=15, pady=2)
+                    row_setting.pack(fill="x", padx=15, pady=5)
                     
                     label_text = key.replace("_", " ").title()
-                    lbl_field = ctk.CTkLabel(row_setting, text=label_text, font=self.get_font(size=12), text_color=("#111827", "#ffffff"), width=140, anchor="w")
+                    lbl_field = ctk.CTkLabel(row_setting, text=label_text, font=self.get_font(size=12, weight="bold"), text_color=("#111827", "#ffffff"), width=140, anchor="w")
                     lbl_field.pack(side="left")
                     
                     entry = ctk.CTkEntry(row_setting, font=self.get_font(size=12), fg_color=("#ffffff", "#131315"), border_color=("#9ca3af", "#3f3f46"), text_color=("#111827", "#ffffff"), height=28)
@@ -616,7 +632,7 @@ class DashboardApp(ctk.CTk):
                         def make_validate_cmd(ent=entry, val_fn=validator):
                             def on_change(event=None):
                                 is_valid = val_fn(ent.get())
-                                ent.configure(border_color=("#22c55e", "#22c55e") if is_valid else ("#ef4444", "#ef4444"))
+                                ent.configure(border_color=("#9ca3af", "#3f3f46") if is_valid else ("#ef4444", "#ef4444"))
                             return on_change
                         cmd_validate = make_validate_cmd()
                         entry.bind("<KeyRelease>", cmd_validate)
@@ -664,6 +680,7 @@ class DashboardApp(ctk.CTk):
         self.entry_query = self._create_input_row(self.scrape_card, "Search Query", "", pady=(15, 5))
         self.entry_loc = self._create_input_row(self.scrape_card, "Location", "", pady=5)
         self.entry_max = self._create_input_row(self.scrape_card, "Max Results", "20", pady=5)
+        self.entry_min_rating = self._create_input_row(self.scrape_card, "Min Rating (optional)", "", pady=5)
         
         # Membuat row untuk Export Format
         row4 = ctk.CTkFrame(self.scrape_card, fg_color="transparent")
@@ -722,16 +739,13 @@ class DashboardApp(ctk.CTk):
         self.scraper_process = None
         self.scraper_thread = None
 
-        # Frame History
-        self.frame_history = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
-        self.frame_history.grid_columnconfigure(0, weight=1)
-        self.frame_history.grid_rowconfigure(2, weight=1)
+        # Section History (digabung ke tab Scraping supaya jumlah tab tidak bertambah)
+        img_history = ctk.CTkImage(light_image=ic_fac_light.asPil('history'), dark_image=ic_fac_dark.asPil('history'), size=(16, 16))
+        self.history_group = ctk.CTkLabel(self.frame_scraper, image=img_history, compound="left", text=" Scraping History", font=self.get_font(size=13, weight="bold"), text_color=("#111827", "#ffffff"))
+        self.history_group.grid(row=3, column=0, padx=30, pady=(20, 5), sticky="nw")
         
-        self.history_title = ctk.CTkLabel(self.frame_history, text="Scraping History", font=self.get_font(size=22, weight="bold"), text_color=("#111827", "#ffffff"))
-        self.history_title.grid(row=0, column=0, padx=30, pady=(30, 15), sticky="nw")
-        
-        history_toolbar = ctk.CTkFrame(self.frame_history, fg_color="transparent")
-        history_toolbar.grid(row=1, column=0, padx=30, pady=(0, 10), sticky="ew")
+        history_toolbar = ctk.CTkFrame(self.frame_scraper, fg_color="transparent")
+        history_toolbar.grid(row=4, column=0, padx=30, pady=(0, 10), sticky="ew")
         
         img_refresh = ctk.CTkImage(light_image=ic_fac_light.asPil('refresh-cw'), dark_image=ic_fac_dark.asPil('refresh-cw'), size=(14, 14))
         img_folder = ctk.CTkImage(light_image=ic_fac_light.asPil('folder-open'), dark_image=ic_fac_dark.asPil('folder-open'), size=(14, 14))
@@ -743,11 +757,13 @@ class DashboardApp(ctk.CTk):
         self.btn_history_open_folder = ctk.CTkButton(history_toolbar, image=img_folder, text=" Open Folder", font=self.get_font(size=12, weight="bold"), fg_color=("#d1d5db", "#3f3f46"), hover_color=("#9ca3af", "#52525b"), text_color=("#111827", "#ffffff"), height=28, width=120, command=self.open_output_folder)
         self.btn_history_open_folder.pack(side="left")
         
-        self.history_scroll = ctk.CTkScrollableFrame(self.frame_history, corner_radius=0, fg_color="transparent")
-        self.history_scroll.grid(row=2, column=0, padx=30, pady=(0, 30), sticky="nsew")
+        # CTkFrame biasa (bukan Scrollable) karena sudah di dalam frame_scraper
+        # yang scrollable; nested scrollable frame bisa konflik scroll/mousewheel.
+        self.history_scroll = ctk.CTkFrame(self.frame_scraper, corner_radius=0, fg_color="transparent")
+        self.history_scroll.grid(row=5, column=0, padx=30, pady=(0, 30), sticky="nsew")
         self.history_scroll.grid_columnconfigure(0, weight=1)
         
-        self.history_empty_label = ctk.CTkLabel(self.history_scroll, text="No scraping results yet. Run a scrape from the Scraping tab to see it here.", font=self.get_font(size=12), text_color=("#6b7280", "#9ca3af"))
+        self.history_empty_label = ctk.CTkLabel(self.history_scroll, text="No scraping results yet. Run a scrape above to see it here.", font=self.get_font(size=12), text_color=("#6b7280", "#9ca3af"))
         
         self.history_rows = []
 
@@ -904,6 +920,10 @@ class DashboardApp(ctk.CTk):
         self.update_sys_monitor()
 
     def update_sys_monitor(self):
+        # Lewati sampling & update widget saat tersembunyi di tray (hemat CPU idle)
+        if self.state() == 'withdrawn':
+            self.after(1000, self.update_sys_monitor)
+            return
         try:
             stats = self.sys_monitor.get_stats()
             
@@ -945,18 +965,19 @@ class DashboardApp(ctk.CTk):
             return
             
         query = self.entry_query.get().strip()
-        location = getattr(self, 'entry_loc', ctk.CTkEntry(self)).get().strip() # Handle just in case
-        if not location:
-            # Fallback if self.entry_loc isn't available somehow
-            try:
-                location = self.entry_loc.get().strip()
-            except:
-                pass
-                
+        location = self.entry_loc.get().strip()
         max_results = self.entry_max.get().strip()
+        min_rating = self.entry_min_rating.get().strip()
         
         if not query:
             return
+        
+        if min_rating:
+            try:
+                float(min_rating.replace(',', '.'))
+            except ValueError:
+                self.show_toast("Min Rating tidak valid.", 3000, error=True)
+                return
         
         selected_fields = [var.get() for var in self.field_vars.values() if var.get()]
         if not selected_fields:
@@ -995,6 +1016,8 @@ class DashboardApp(ctk.CTk):
         cmd = [sys.executable, "-u", script_path, "--query", full_query, "--max", max_results, "--output", output_path, "--format", export_type]
         if selected_fields:
             cmd.extend(["--fields"] + selected_fields)
+        if min_rating:
+            cmd.extend(["--min-rating", min_rating.replace(',', '.')])
         
         self.scraper_process = subprocess.Popen(
             cmd,
@@ -1129,6 +1152,11 @@ class DashboardApp(ctk.CTk):
             logger.error(f"Failed to open output folder: {e}")
 
     def update_overview(self):
+        # Lewati update label saat tersembunyi di tray (uptime tetap dihitung
+        # dari app_start_time saat window ditampilkan lagi)
+        if self.state() == 'withdrawn':
+            self.after(1000, self.update_overview)
+            return
         active_count = sum(1 for w in self.workers if w.is_running)
         total_count = len(self.workers)
         
@@ -1152,7 +1180,6 @@ class DashboardApp(ctk.CTk):
         self.frame_dash.grid_forget()
         self.frame_discord.grid_forget()
         self.frame_scraper.grid_forget()
-        self.frame_history.grid_forget()
         self.frame_logs.grid_forget()
         self.frame_settings.grid_forget()
         self.frame_credits.grid_forget()
@@ -1163,8 +1190,6 @@ class DashboardApp(ctk.CTk):
             self.frame_discord.grid(row=0, column=1, sticky="nsew")
         elif tab_name == "Scraping":
             self.frame_scraper.grid(row=0, column=1, sticky="nsew")
-        elif tab_name == "History":
-            self.frame_history.grid(row=0, column=1, sticky="nsew")
             self.refresh_history()
         elif tab_name == "Logs":
             self.frame_logs.grid(row=0, column=1, sticky="nsew")
@@ -1310,9 +1335,13 @@ class DashboardApp(ctk.CTk):
             self.hide_to_tray()
 
     def poll_logs(self):
-        # Polling logs dari queue tanpa me-lagging UI thread
-        if log_queue and len(log_queue) != getattr(self, '_last_log_len', -1):
-            self._last_log_len = len(log_queue)
+        # Polling logs dari queue tanpa me-lagging UI thread.
+        # Saat window disembunyikan ke tray, tidak perlu render (hemat CPU).
+        if self.state() == 'withdrawn':
+            self.after(200, self.poll_logs)
+            return
+        if gui_handler.counter != getattr(self, '_last_log_counter', -1):
+            self._last_log_counter = gui_handler.counter
             self.render_logs()
         self.after(200, self.poll_logs)
 
@@ -1359,17 +1388,31 @@ class DashboardApp(ctk.CTk):
 
     def create_tray_image(self):
         # Gunakan Lucide icon untuk tray
-        ic_fac = IconFactory(icon_set='lucide', icon_size=64, font_color=self.accent_color)
+        ic_fac = get_icon_factory(64, self.accent_color)
         return ic_fac.asPil('circle')
+
+    def _make_tray_toggle(self, worker):
+        # Start/stop worker langsung dari menu tray tanpa buka window
+        def toggle(icon, item):
+            self.after(0, worker.stop if worker.is_running else worker.start)
+        return toggle
 
     def init_tray(self):
         image = self.create_tray_image()
-        menu = pystray.Menu(
-            pystray.MenuItem("Show Dashboard", self.on_tray_show),
-            pystray.MenuItem("Exit", self.on_tray_exit)
-        )
+        menu_items = [pystray.MenuItem("Show Dashboard", self.on_tray_show, default=True), pystray.Menu.SEPARATOR]
+        for worker in self.workers:
+            menu_items.append(
+                pystray.MenuItem(
+                    lambda item, w=worker: f"{'Stop' if w.is_running else 'Start'} {w.name}",
+                    self._make_tray_toggle(worker),
+                    checked=lambda item, w=worker: w.is_running
+                )
+            )
+        menu_items.append(pystray.Menu.SEPARATOR)
+        menu_items.append(pystray.MenuItem("Exit", self.on_tray_exit))
+        menu = pystray.Menu(*menu_items)
         self.tray_icon = pystray.Icon("horizon_dashboard", image, "HORIZON Dashboard", menu)
-        
+
         # Tray loop memblokir, jadi harus di-background
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 

@@ -1,5 +1,6 @@
 import sys
 import os
+import re
 import argparse
 import time
 import functools
@@ -21,6 +22,7 @@ def main():
     parser.add_argument("--output", type=str, default="output.xlsx", help="Output file path")
     parser.add_argument("--format", type=str, default="xlsx", help="Export format (xlsx, docx, pdf, html)")
     parser.add_argument("--fields", type=str, nargs="+", default=["Name", "Category", "Rating", "Address", "Phone", "Website", "URL"], help="Fields to extract")
+    parser.add_argument("--min-rating", type=float, default=0.0, help="Minimum rating filter (e.g. 4.0). 0 disables filtering.")
     args = parser.parse_args()
 
     query = args.query
@@ -122,6 +124,21 @@ def main():
                         rating = rating_text.replace('\n', ' ').strip()
                     except:
                         pass
+                    
+                    # Filter rating minimum: lewati listing yang ratingnya di bawah
+                    # ambang batas (atau tidak punya rating sama sekali) sebelum
+                    # melanjutkan ekstraksi data lain, menghemat waktu scraping.
+                    if args.min_rating > 0:
+                        parsed_rating = None
+                        match = re.search(r"(\d+(?:[.,]\d+)?)", rating) if rating else None
+                        if match:
+                            try:
+                                parsed_rating = float(match.group(1).replace(',', '.'))
+                            except ValueError:
+                                parsed_rating = None
+                        if parsed_rating is None or parsed_rating < args.min_rating:
+                            print(f"[INFO] Skipped '{name or 'Unknown'}' (rating {rating or 'N/A'} below minimum {args.min_rating})")
+                            continue
                         
                     category = ""
                     try:
@@ -235,6 +252,7 @@ def main():
             elif fmt == "pdf":
                 try:
                     from fpdf import FPDF
+                    import textwrap
                     
                     class PDF(FPDF):
                         def header(self):
@@ -245,37 +263,45 @@ def main():
                     pdf.add_page()
                     pdf.set_font("helvetica", size=8)
                     
-                    # For PDF, table rendering can be complex, so we will list items
+                    # For PDF, table rendering can be complex, so we will list items.
+                    # Hanya field yang dicentang user (ada di kolom hasil) yang dirender,
+                    # supaya tidak ada baris/label kosong untuk field yang tidak dipilih.
                     for index, row in enumerate(results):
                         pdf.set_font("helvetica", "B", 10)
                         
-                        name = str(row['Name']).encode('latin-1', 'replace').decode('latin-1')
+                        name = str(row.get('Name', f'Result {index + 1}')).encode('latin-1', 'replace').decode('latin-1')
                         pdf.cell(w=0, h=8, text=f"{index+1}. {name}", border=0, new_x="LMARGIN", new_y="NEXT", align='L')
                         pdf.set_font("helvetica", "", 8)
                         
-                        cat = str(row.get('Category', '')).encode('latin-1', 'replace').decode('latin-1')
-                        rating = str(row.get('Rating', '')).encode('latin-1', 'replace').decode('latin-1')
-                        address = str(row.get('Address', '')).encode('latin-1', 'replace').decode('latin-1')
-                        phone = str(row.get('Phone', '')).encode('latin-1', 'replace').decode('latin-1')
-                        website = str(row.get('Website', '')).encode('latin-1', 'replace').decode('latin-1')
-                        url = str(row.get('URL', ''))
+                        # Baris "Category | Rating" hanya ditulis jika salah satu field dicentang
+                        meta_parts = []
+                        if 'Category' in row:
+                            meta_parts.append(f"Category: {row.get('Category', '')}")
+                        if 'Rating' in row:
+                            meta_parts.append(f"Rating: {row.get('Rating', '')}")
+                        if meta_parts:
+                            meta_text = " | ".join(meta_parts).encode('latin-1', 'replace').decode('latin-1')
+                            for line in textwrap.wrap(meta_text, width=110, break_long_words=True):
+                                pdf.cell(w=0, h=5, text=line, border=0, new_x="LMARGIN", new_y="NEXT", align="L")
                         
-                        import textwrap
+                        if 'Address' in row:
+                            address = str(row.get('Address', '')).encode('latin-1', 'replace').decode('latin-1')
+                            addr_text = f"Address: {address}"
+                            for line in textwrap.wrap(addr_text, width=110, break_long_words=True):
+                                pdf.cell(w=0, h=5, text=line, border=0, new_x="LMARGIN", new_y="NEXT", align="L")
                         
-                        cat_text = f"Category: {cat} | Rating: {rating}"
-                        addr_text = f"Address: {address}"
-                        contact_text = f"Phone: {phone} | Web: {website}"
+                        contact_parts = []
+                        if 'Phone' in row:
+                            contact_parts.append(f"Phone: {row.get('Phone', '')}")
+                        if 'Website' in row:
+                            contact_parts.append(f"Web: {row.get('Website', '')}")
+                        if contact_parts:
+                            contact_text = " | ".join(contact_parts).encode('latin-1', 'replace').decode('latin-1')
+                            for line in textwrap.wrap(contact_text, width=110, break_long_words=True):
+                                pdf.cell(w=0, h=5, text=line, border=0, new_x="LMARGIN", new_y="NEXT", align="L")
                         
-                        for line in textwrap.wrap(cat_text, width=110, break_long_words=True):
-                            pdf.cell(w=0, h=5, text=line, border=0, new_x="LMARGIN", new_y="NEXT", align="L")
-                            
-                        for line in textwrap.wrap(addr_text, width=110, break_long_words=True):
-                            pdf.cell(w=0, h=5, text=line, border=0, new_x="LMARGIN", new_y="NEXT", align="L")
-                            
-                        for line in textwrap.wrap(contact_text, width=110, break_long_words=True):
-                            pdf.cell(w=0, h=5, text=line, border=0, new_x="LMARGIN", new_y="NEXT", align="L")
-                        
-                        if url:
+                        if row.get('URL'):
+                            url = str(row.get('URL', ''))
                             pdf.set_text_color(0, 0, 255)
                             pdf.cell(w=0, h=5, text="View on Google Maps", border=0, new_x="LMARGIN", new_y="NEXT", link=url)
                             pdf.set_text_color(0, 0, 0)
